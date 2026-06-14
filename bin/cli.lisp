@@ -9,8 +9,13 @@ CLI.LISP
     Copyright © 2025, all rights reserved.
     Created: 13 June 2025
 ======================================================================|#
-(require :asdf)
-(asdf:load-system :xgamengine)
+;; ---- Bootstrap (required for --script mode) ----
+
+;; Load Quicklisp (it handles ASDF internally)
+(load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
+
+;; Quicklisp finds the system via ~/quicklisp/local-projects/ symlink
+(ql:quickload :xgamengine)
 (in-package :xgamengine)
 
 ;; ---- ANSI Colors ----
@@ -135,20 +140,21 @@ INPUT is the raw user input string."
 
 (defun repl-loop ()
   "Run the interactive REPL loop."
-  (loop
+  (tagbody
+   :next-loop
     (format t "~a> ~a" *ansi-green* *ansi-reset*)
     (finish-output)
     (let ((input (read-line *standard-input* nil :eof)))
       (when (or (null input) (eq input :eof))
         (format t "~%再见！~%")
-        (return))
+        (go :done))
 
       ;; Check for commands
       (when (str:starts-with-p "/" input)
         (let ((result (handle-command input)))
           (when (eq result :quit)
-            (return))
-          (go :next-loop)))
+            (go :done)))
+        (go :next-loop))
 
       ;; Check for empty input
       (when (string= "" (string-trim '(#\Space) input))
@@ -158,17 +164,13 @@ INPUT is the raw user input string."
       (format t "~%")
       (handler-case
           (let ((output (process-input input)))
-            ;; Display narrative
             (print-narrative (engine-output-narrative output))
-            ;; Display state changes
             (when (engine-output-state-changes output)
               (format t "~a~%"
                       (color "【状态变化】" *ansi-yellow*))
               (dolist (change (engine-output-state-changes output))
                 (format t "  ~a~%" change)))
-            ;; Display suggestions
             (print-suggestions (engine-output-suggestions output))
-            ;; Display usage (debug)
             (when (engine-output-usage output)
               (format t "~a~%"
                       (color (format nil "[Tokens: ~d]"
@@ -179,8 +181,9 @@ INPUT is the raw user input string."
           (format t "~a 引擎错误: ~a ~a~%"
                   (color "✗" *ansi-red*) e *ansi-reset*)
           (format t "请重试。如果问题持续，输入 /quit 退出。~%")))
-      (terpri))
-    :next-loop))
+      (terpri)
+      (go :next-loop))
+   :done))
 
 ;; ---- Entry Point ----
 
