@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Player combat attributes (六维 — xianxia style)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +97,9 @@ pub struct GameState {
     // Social
     pub sect: String,
     pub relationships: Vec<Relationship>,
+    /// Player's accumulated knowledge about each character (name → description)
+    #[serde(default)]
+    pub character_notes: std::collections::HashMap<String, String>,
 
     // Narrative
     pub flags: Vec<String>,
@@ -143,6 +147,11 @@ impl Default for GameState {
             relationships: vec![
                 Relationship { name: "清虚道人".into(), role: "师尊".into(), affinity: 20 }
             ],
+            character_notes: {
+                let mut m = HashMap::new();
+                m.insert("清虚道人".into(), "青云宗传功长老，元婴后期大修士，外表四十余岁，面容清瘦，双目如电。表面冷淡，内心护短。".into());
+                m
+            },
             flags: vec!["game-started".into()],
             recent_events: vec![],
             last_narrative: String::new(),

@@ -196,9 +196,13 @@ impl Engine {
         let mut opts = vec!["继续修炼".into()];
         if self.state.qi < 50 {
             opts.push("恢复灵力".into());
+        } else {
+            opts.push("研习功法".into());
         }
         if self.state.realm_progress > 0.7 {
             opts.push("准备突破".into());
+        } else {
+            opts.push("查看状态".into());
         }
         opts.push("探索周围".into());
         opts.push("与师尊交谈".into());
