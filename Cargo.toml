@@ -1,0 +1,23 @@
+[package]
+name = "xgamengine"
+version = "0.2.0"
+edition = "2021"
+description = "AI-text-based game engine for xianxia simulation"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = "0.7"
+
+# HTTP + async
+reqwest = { version = "0.12", features = ["stream", "json"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# String / regex
+regex = "1"

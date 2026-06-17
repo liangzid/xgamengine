@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# xgamengine launcher
+ENGINE_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENGINE_DIR="$(dirname "$ENGINE_DIR")"
+export XGAMENGINE_TEMPLATE_DIR="$ENGINE_DIR/../templates"
+exec "$ENGINE_DIR/target/release/xgamengine" "$@"
