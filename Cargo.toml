@@ -11,7 +11,7 @@ crossterm = "0.28"
 tui-textarea = "0.7"
 
 # HTTP + async
-reqwest = { version = "0.12", features = ["stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 

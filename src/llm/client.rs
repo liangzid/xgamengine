@@ -27,11 +27,11 @@ impl LlmClient {
         Ok(Self::new(key))
     }
 
-    /// Non-streaming chat completion
+    /// Non-streaming chat completion. Returns (content, total_tokens_used).
     pub async fn chat_completion_sync(
         &self,
         messages: &[crate::memory::Message],
-    ) -> Result<String, String> {
+    ) -> Result<(String, u64), String> {
         let client = reqwest::Client::new();
         let msgs: Vec<Value> = messages.iter().map(|m| json!({
             "role": m.role,
@@ -43,7 +43,7 @@ impl LlmClient {
             "messages": msgs,
             "thinking": { "type": "disabled" },
             "temperature": 0.9,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
         });
 
         let resp = client.post(format!("{}/chat/completions", API_BASE_URL))
@@ -57,10 +57,16 @@ impl LlmClient {
         let json_resp: Value = resp.json().await
             .map_err(|e| format!("JSON parse error: {}", e))?;
 
-        json_resp["choices"][0]["message"]["content"]
+        let content = json_resp["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| format!("No content in response: {:?}", json_resp))
+            .ok_or_else(|| format!("No content in response: {:?}", json_resp))?;
+
+        let tokens = json_resp["usage"]["total_tokens"]
+            .as_u64()
+            .unwrap_or(0);
+
+        Ok((content, tokens))
     }
 
     /// Streaming chat completion — yields SseEvent via channel
@@ -80,7 +86,7 @@ impl LlmClient {
             "messages": msgs,
             "thinking": { "type": "disabled" },
             "temperature": 0.9,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "stream": true,
         });
 

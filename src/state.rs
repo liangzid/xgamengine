@@ -4,23 +4,23 @@ use std::collections::HashMap;
 /// Player combat attributes (六维 — xianxia style)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerStats {
-    pub physical_attack: i32,   // 物攻
-    pub magical_attack: i32,    // 法攻
-    pub physical_defense: i32,  // 物防
-    pub magical_defense: i32,   // 法防
-    pub divine_attack: i32,     // 神识攻
-    pub divine_defense: i32,    // 神识防
+    pub sword_art: i32,     // 剑道
+    pub spell_art: i32,     // 术法
+    pub blood_qi: i32,      // 气血
+    pub spirit_soul: i32,   // 神魂
+    pub divine_sense: i32,  // 神识
+    pub dao_heart: i32,     // 道心
 }
 
 impl Default for PlayerStats {
     fn default() -> Self {
         Self {
-            physical_attack: 10,
-            magical_attack: 5,
-            physical_defense: 8,
-            magical_defense: 4,
-            divine_attack: 3,
-            divine_defense: 6,
+            sword_art: 10,
+            spell_art: 5,
+            blood_qi: 8,
+            spirit_soul: 4,
+            divine_sense: 3,
+            dao_heart: 6,
         }
     }
 }
@@ -29,18 +29,25 @@ impl Default for PlayerStats {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Technique {
     pub name: String,
-    pub tier: String,       // 黄阶/玄阶/地阶/天阶
-    pub tech_type: String,  // 攻击/防御/身法/心法
-    pub proficiency: f32,   // 0.0 ~ 1.0
+    #[serde(default)]
+    pub tier: String,
+    #[serde(default)]
+    pub tech_type: String,
+    #[serde(default)]
+    pub proficiency: f32,
 }
 
 /// Inventory item
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InventoryItem {
     pub name: String,
-    pub item_type: String,  // 丹药/法器/功法/材料/杂物
-    pub quality: String,    // 普通/精良/稀有/传说
+    #[serde(default)]
+    pub item_type: String,
+    #[serde(default)]
+    pub quality: String,
+    #[serde(default)]
     pub quantity: i32,
+    #[serde(default)]
     pub effect: String,
 }
 
@@ -177,10 +184,10 @@ impl GameState {
         s.push_str(&format!("修炼境界: {}\n", self.realm));
         s.push_str(&format!("修炼进度: {:.0}%\n", self.realm_progress * 100.0));
         s.push_str(&format!("灵力: {}/{}\n", self.qi, self.max_qi));
-        s.push_str(&format!("六维: 物攻{} 法攻{} 物防{} 法防{} 神识攻{} 神识防{}\n",
-            self.stats.physical_attack, self.stats.magical_attack,
-            self.stats.physical_defense, self.stats.magical_defense,
-            self.stats.divine_attack, self.stats.divine_defense));
+        s.push_str(&format!("六维: 剑道{} 术法{} 气血{} 神魂{} 神识{} 道心{}\n",
+            self.stats.sword_art, self.stats.spell_art,
+            self.stats.blood_qi, self.stats.spirit_soul,
+            self.stats.divine_sense, self.stats.dao_heart));
         s.push_str(&format!("灵石: {}\n", self.spirit_stones));
         s.push_str(&format!("宗门: {}\n", self.sect));
         s.push_str(&format!("当前地点: {}\n", self.current_location));
@@ -241,23 +248,23 @@ impl GameState {
         if let Some(ssd) = change.spirit_stones_delta {
             self.spirit_stones = (self.spirit_stones + ssd).max(0);
         }
-        if let Some(a) = change.physical_attack_delta {
-            self.stats.physical_attack = (self.stats.physical_attack + a).max(0);
+        if let Some(a) = change.sword_art_delta {
+            self.stats.sword_art = (self.stats.sword_art + a).max(0);
         }
-        if let Some(a) = change.magical_attack_delta {
-            self.stats.magical_attack = (self.stats.magical_attack + a).max(0);
+        if let Some(a) = change.spell_art_delta {
+            self.stats.spell_art = (self.stats.spell_art + a).max(0);
         }
-        if let Some(d) = change.physical_defense_delta {
-            self.stats.physical_defense = (self.stats.physical_defense + d).max(0);
+        if let Some(d) = change.blood_qi_delta {
+            self.stats.blood_qi = (self.stats.blood_qi + d).max(0);
         }
-        if let Some(d) = change.magical_defense_delta {
-            self.stats.magical_defense = (self.stats.magical_defense + d).max(0);
+        if let Some(d) = change.spirit_soul_delta {
+            self.stats.spirit_soul = (self.stats.spirit_soul + d).max(0);
         }
-        if let Some(a) = change.divine_attack_delta {
-            self.stats.divine_attack = (self.stats.divine_attack + a).max(0);
+        if let Some(a) = change.divine_sense_delta {
+            self.stats.divine_sense = (self.stats.divine_sense + a).max(0);
         }
-        if let Some(d) = change.divine_defense_delta {
-            self.stats.divine_defense = (self.stats.divine_defense + d).max(0);
+        if let Some(d) = change.dao_heart_delta {
+            self.stats.dao_heart = (self.stats.dao_heart + d).max(0);
         }
         if let Some(ref techs) = change.add_techniques {
             for t in techs {
@@ -345,6 +352,27 @@ impl GameState {
                 self.recent_events.remove(0);
             }
         }
+        // Consume items: reduce quantity, remove if ≤ 0
+        if let Some(ref consumes) = change.consume_items {
+            for c in consumes {
+                if let Some(item) = self.inventory.iter_mut().find(|i| i.name == c.name) {
+                    item.quantity = (item.quantity - c.quantity).max(0);
+                }
+            }
+            self.inventory.retain(|i| i.quantity > 0);
+        }
+        // Rename relationships: update character name
+        if let Some(ref renames) = change.rename_relationships {
+            for r in renames {
+                if let Some(rel) = self.relationships.iter_mut().find(|x| x.name == r.old_name) {
+                    rel.name = r.new_name.clone();
+                }
+                // Also update character_notes
+                if let Some(notes) = self.character_notes.remove(&r.old_name) {
+                    self.character_notes.insert(r.new_name.clone(), notes);
+                }
+            }
+        }
     }
 }
 
@@ -356,12 +384,12 @@ pub struct StateChange {
     pub qi_set: Option<i32>,              // absolute set (for breakthroughs that fully restore)
     pub max_qi_delta: Option<i32>,        // increase max qi
     pub spirit_stones_delta: Option<i32>,
-    pub physical_attack_delta: Option<i32>,
-    pub magical_attack_delta: Option<i32>,
-    pub physical_defense_delta: Option<i32>,
-    pub magical_defense_delta: Option<i32>,
-    pub divine_attack_delta: Option<i32>,
-    pub divine_defense_delta: Option<i32>,
+    pub sword_art_delta: Option<i32>,
+    pub spell_art_delta: Option<i32>,
+    pub blood_qi_delta: Option<i32>,
+    pub spirit_soul_delta: Option<i32>,
+    pub divine_sense_delta: Option<i32>,
+    pub dao_heart_delta: Option<i32>,
     pub add_techniques: Option<Vec<Technique>>,
     pub add_items: Option<Vec<InventoryItem>>,
     pub remove_items: Option<Vec<String>>,
@@ -371,11 +399,31 @@ pub struct StateChange {
     pub quest_updates: Option<Vec<QuestUpdate>>,
     pub add_flag: Option<String>,
     pub add_event: Option<String>,
+    /// Consume (reduce quantity of) existing inventory items
+    #[serde(default)]
+    pub consume_items: Option<Vec<ConsumeItem>>,
+    /// Rename an existing relationship (e.g. "未知壮汉" → "张三")
+    #[serde(default)]
+    pub rename_relationships: Option<Vec<RenameRelationship>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsumeItem {
+    pub name: String,
+    #[serde(default)]
+    pub quantity: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameRelationship {
+    pub old_name: String,
+    pub new_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationshipChange {
     pub name: String,
+    #[serde(default)]
     pub affinity_delta: i32,
     pub new_role: Option<String>,
 }

@@ -78,15 +78,15 @@ fn render_panel(frame: &mut Frame, area: Rect, state: &GameState) {
     // Stats — 六维
     lines.push(Line::from("六维属性:"));
     lines.push(Line::from(Span::styled(
-        format!("  物攻{}  法攻{}", state.stats.physical_attack, state.stats.magical_attack),
+        format!("  剑道{}  术法{}", state.stats.sword_art, state.stats.spell_art),
         Style::default().fg(Color::Red),
     )));
     lines.push(Line::from(Span::styled(
-        format!("  物防{}  法防{}", state.stats.physical_defense, state.stats.magical_defense),
+        format!("  气血{}  神魂{}", state.stats.blood_qi, state.stats.spirit_soul),
         Style::default().fg(Color::Blue),
     )));
     lines.push(Line::from(Span::styled(
-        format!("  神识攻{}  神识防{}", state.stats.divine_attack, state.stats.divine_defense),
+        format!("  神识{}  道心{}", state.stats.divine_sense, state.stats.dao_heart),
         Style::default().fg(Color::Magenta),
     )));
 
@@ -176,7 +176,8 @@ pub fn render_options(frame: &mut Frame, area: Rect, meta_text: &Option<String>,
 pub fn render_prompt(frame: &mut Frame, area: Rect, app: &AppState) {
     let text = match app.mode {
         AppMode::CustomInput => "输入模式: Enter 提交  Esc 取消".to_string(),
-        _ => "1-4 选择  5/`:` 自由输入  j/k 上下  Enter 确认  q 退出".to_string(),
+        AppMode::Chronicle => "c/Enter 返回   ↑↓ 滚动".to_string(),
+        _ => "1-4 选择  5/`:` 自由输入  j/k 上下  Enter 确认  s 存档  c 史书  e 导出  q 退出".to_string(),
     };
     let prompt = Paragraph::new(text)
         .style(Style::default().add_modifier(Modifier::DIM));
@@ -188,19 +189,43 @@ pub fn render_input(frame: &mut Frame, area: Rect, app: &AppState) {
     frame.render_widget(&app.textarea, area);
 }
 
-/// Render a loading spinner
+/// Render a loading spinner with golden glow and cycling text
 pub fn render_spinner(frame: &mut Frame, area: Rect, app: &AppState) {
     let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let c = spinner_chars[app.spinner_frame % spinner_chars.len()];
-    let text = format!("{} 天道玉简微震，推演天机...", c);
-    let para = Paragraph::new(text)
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM));
+    let spinner = spinner_chars[app.spinner_frame % spinner_chars.len()];
+    let texts = ["推演天机...", "感应天道...", "窥探命数...", "运转周天..."];
+    let text = texts[(app.spinner_frame / 8) % texts.len()];
+
+    let line = Line::from(vec![
+        Span::styled(
+            format!("{} ", spinner),
+            Style::default().fg(Color::Rgb(200, 160, 40)).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("天道玉简微震，{}", text),
+            Style::default().fg(Color::Rgb(180, 150, 60)),
+        ),
+    ]);
+
+    let para = Paragraph::new(line);
     frame.render_widget(para, area);
 }
 
 /// Spin the spinner forward one frame
 pub fn tick_spinner(app: &mut AppState) {
     app.spinner_frame = app.spinner_frame.wrapping_add(1);
+}
+
+/// Render the chronicle overlay
+pub fn render_chronicle(frame: &mut Frame, area: Rect, app: &AppState) {
+    let block = Block::default()
+        .title(" 岁月史书 ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(200, 160, 40)));
+    let para = Paragraph::new(app.chronicle_text.as_str())
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(para, area);
 }
 
 /// Application state
@@ -215,6 +240,7 @@ pub struct AppState {
     pub mode: AppMode,
     pub textarea: TextArea<'static>,
     pub spinner_frame: usize,
+    pub chronicle_text: String,
 }
 
 #[derive(PartialEq)]
@@ -223,6 +249,7 @@ pub enum AppMode {
     Displaying,
     Selecting,
     CustomInput,
+    Chronicle,
     Quit,
 }
 
@@ -242,6 +269,7 @@ impl AppState {
             mode: AppMode::Loading,
             textarea,
             spinner_frame: 0,
+            chronicle_text: String::new(),
         }
     }
 

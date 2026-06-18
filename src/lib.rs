@@ -5,3 +5,4 @@ pub mod llm;
 pub mod engine;
 pub mod scenes;
 pub mod tui;
+pub mod chronicle;

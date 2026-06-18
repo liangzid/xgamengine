@@ -116,6 +116,16 @@ impl ConversationWindow {
     pub fn round_count(&self) -> usize {
         self.round_count
     }
+
+    /// Inject a persistent system message (e.g. format transition) at the
+    /// start of the message list. Used when loading old saves whose history
+    /// lacks structured format markers.
+    pub fn inject_format_transition(&mut self, text: &str) {
+        self.messages.insert(0, Message {
+            role: "system".into(),
+            content: text.to_string(),
+        });
+    }
 }
 
 /// Rough token count: Chinese char ≈ 0.5 token, ASCII word ≈ 1 token,

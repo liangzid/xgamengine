@@ -1,3 +1,4 @@
+use crate::chronicle::Chronicle;
 use crate::llm::client::{LlmClient, SseEvent};
 use crate::memory::ConversationWindow;
 use crate::prompt::builder;
@@ -31,6 +32,7 @@ pub struct Engine {
     pub template_dir: PathBuf,
     pub client: LlmClient,
     pub npc: String,
+    pub chronicle: Chronicle,
 }
 
 impl Engine {
@@ -41,6 +43,7 @@ impl Engine {
             template_dir,
             client,
             npc: "qingxu".into(),
+            chronicle: Chronicle::new(),
         }
     }
 
@@ -50,7 +53,7 @@ impl Engine {
             &self.template_dir, &self.state, &self.window, opening_input, &self.npc
         )?;
 
-        let raw = self.client.chat_completion_sync(&messages).await?;
+        let (raw, _tokens) = self.client.chat_completion_sync(&messages).await?;
         let parsed = builder::parse_structured_response(&raw);
 
         let had_fallback = parsed.options.is_empty();
@@ -81,7 +84,7 @@ impl Engine {
             &self.template_dir, &self.state, &self.window, &opening_input, &self.npc
         )?;
 
-        let raw = self.client.chat_completion_sync(&messages).await?;
+        let (raw, _tokens) = self.client.chat_completion_sync(&messages).await?;
         let parsed = builder::parse_structured_response(&raw);
 
         let had_fallback = parsed.options.is_empty();
@@ -104,12 +107,26 @@ impl Engine {
     /// Process a player input — returns output (blocking).
     /// Call LLM to extract state changes from narrative (JSON output mode)
     pub async fn extract_state_with_llm(&self, narrative: &str) -> crate::state::StateChange {
-        let prompt = crate::prompt::builder::build_state_extraction_prompt(&self.state, narrative);
+        // Build recent conversation context (last 3 rounds) for entity tracking
+        let context_msgs = self.window.get_context_messages();
+        let recent: Vec<_> = context_msgs.iter()
+            .filter(|m| m.role != "system")
+            .rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
+        let recent_context = recent.iter()
+            .map(|m| format!("[{}]: {}", m.role, 
+                if m.role == "assistant" { 
+                    let p = crate::prompt::builder::parse_structured_response(&m.content);
+                    p.narrative 
+                } else { m.content.clone() }))
+            .collect::<Vec<_>>()
+            .join("\n");
+        
+        let prompt = crate::prompt::builder::build_state_extraction_prompt(&self.state, narrative, &recent_context);
         let msgs = vec![
             crate::memory::Message { role: "system".into(), content: prompt }
         ];
         match self.client.chat_completion_sync(&msgs).await {
-            Ok(raw) => crate::prompt::builder::parse_state_change_json(&raw, &self.state),
+            Ok((raw, _tokens)) => crate::prompt::builder::parse_state_change_json(&raw, &self.state),
             Err(_) => crate::state::StateChange::default(),
         }
     }
@@ -125,7 +142,7 @@ impl Engine {
                 let compact_msgs = vec![
                     crate::memory::Message { role: "system".into(), content: compact_prompt }
                 ];
-                if let Ok(summary_raw) = self.client.chat_completion_sync(&compact_msgs).await {
+                if let Ok((summary_raw, _tokens)) = self.client.chat_completion_sync(&compact_msgs).await {
                     self.window.apply_compaction(&summary_raw);
                 }
             }
@@ -138,7 +155,7 @@ impl Engine {
             &self.template_dir, &self.state, &self.window, &input_with_hint, &self.npc
         )?;
 
-        let raw = self.client.chat_completion_sync(&messages).await?;
+        let (raw, _tokens) = self.client.chat_completion_sync(&messages).await?;
         let mut parsed = builder::parse_structured_response(&raw);
 
         if parsed.narrative.is_empty() {
@@ -155,7 +172,7 @@ impl Engine {
             let retry_messages = builder::build_messages(
                 &self.template_dir, &self.state, &self.window, &retry_input, &self.npc
             )?;
-            if let Ok(retry_raw) = self.client.chat_completion_sync(&retry_messages).await {
+            if let Ok((retry_raw, _)) = self.client.chat_completion_sync(&retry_messages).await {
                 let retry_parsed = builder::parse_structured_response(&retry_raw);
                 if !retry_parsed.options.is_empty() {
                     parsed = retry_parsed;
@@ -168,7 +185,8 @@ impl Engine {
         let meta_text = parsed.meta_text.clone();
         let scene_type = parsed.scene_type.clone();
         let final_options = if parsed.options.is_empty() {
-            self.generate_fallback_options()
+            eprintln!("[engine] AI returned no options — empty, free input only (round {})", self.state.round);
+            vec![]
         } else {
             parsed.options
         };
@@ -177,6 +195,11 @@ impl Engine {
         let changes = self.extract_state_with_llm(&narrative).await;
         self.state.apply_state_change(&changes);
         self.state.last_narrative = narrative.clone();
+
+        // Record this round in the chronicle
+        self.chronicle.record_round(
+            self.state.round, &self.state.realm, &changes, &self.state.flags,
+        );
 
         self.window.append_turn(user_input, &narrative);
 
@@ -191,21 +214,60 @@ impl Engine {
         }.with_custom_option())
     }
 
-    /// Generate sensible fallback options based on current state
+    /// Generate context-aware fallback options based on current game state.
+    /// These are used only when the AI fails to produce options — a last resort.
     pub fn generate_fallback_options(&self) -> Vec<String> {
-        let mut opts = vec!["继续修炼".into()];
-        if self.state.qi < 50 {
-            opts.push("恢复灵力".into());
-        } else {
-            opts.push("研习功法".into());
-        }
+        let mut opts: Vec<String> = Vec::new();
+
+        // Cultivation options — always relevant
         if self.state.realm_progress > 0.7 {
-            opts.push("准备突破".into());
+            opts.push("尝试突破境界".into());
+        } else if self.state.qi < 50 {
+            opts.push("打坐恢复灵力".into());
         } else {
-            opts.push("查看状态".into());
+            opts.push("潜心修炼功法".into());
         }
-        opts.push("探索周围".into());
-        opts.push("与师尊交谈".into());
+
+        // Location-based options
+        if self.state.current_location.contains("洞府") || self.state.current_location.contains("闭关") {
+            opts.push("出关探索外界".into());
+        } else if self.state.current_location.contains("坊市") {
+            opts.push("浏览坊市摊位".into());
+        } else if self.state.current_location.contains("殿") {
+            opts.push("向师尊请教".into());
+        } else {
+            opts.push("继续探索此处".into());
+        }
+
+        // Inventory / resource options
+        if !self.state.inventory.is_empty() {
+            let item = &self.state.inventory[0];
+            if item.item_type == "丹药" {
+                opts.push(format!("服用{}", item.name));
+            } else if item.item_type == "法器" {
+                opts.push(format!("祭炼{}", item.name));
+            } else if item.item_type == "功法" {
+                opts.push(format!("研读{}", item.name));
+            } else {
+                opts.push("整理随身物品".into());
+            }
+        } else {
+            opts.push("寻找可用资源".into());
+        }
+
+        // Relationship-driven options
+        if let Some(rel) = self.state.relationships.first() {
+            if rel.affinity > 50 {
+                opts.push(format!("与{}深谈", rel.name));
+            } else if rel.affinity < 0 {
+                opts.push(format!("尝试缓和与{}的关系", rel.name));
+            } else {
+                opts.push(format!("拜访{}", rel.name));
+            }
+        } else {
+            opts.push("结识新的道友".into());
+        }
+
         opts.truncate(4);
         opts
     }
@@ -229,7 +291,7 @@ impl Engine {
         // Stream is done — we still need the full text for parsing
         // For now, just call sync again for parsing
         // TODO: accumulate from stream for real streaming + parsing
-        let raw = self.client.chat_completion_sync(&messages).await?;
+        let (raw, _tokens) = self.client.chat_completion_sync(&messages).await?;
         let parsed = builder::parse_structured_response(&raw);
 
         let changes = crate::state::StateChange::default(); // streaming path: skip extraction for now
@@ -253,6 +315,7 @@ impl Engine {
             "state": self.state,
             "window": self.window,
             "npc": self.npc,
+            "chronicle": self.chronicle,
         });
         std::fs::write(path, data.to_string())
             .map_err(|e| format!("Save failed: {}", e))
@@ -282,6 +345,73 @@ impl Engine {
                 .unwrap_or_else(|_| "qingxu".into());
         }
 
+        // Load chronicle (may not exist in older saves)
+        if let Some(chronicle_val) = data.get("chronicle") {
+            self.chronicle = serde_json::from_value(chronicle_val.clone())
+                .unwrap_or_else(|_| Chronicle::new());
+        }
+
         Ok(())
+    }
+
+    /// Summarize a chronicle volume via LLM. Returns the summary or error.
+    pub async fn summarize_chronicle_volume(&self, volume_index: usize) -> Result<String, String> {
+        let prompt = self.chronicle.build_summary_prompt(volume_index)
+            .ok_or_else(|| "Volume index out of range".to_string())?;
+        let msgs = vec![
+            crate::memory::Message { role: "system".into(), content: prompt }
+        ];
+        self.client.chat_completion_sync(&msgs).await.map(|(s,_)| s)
+    }
+
+    /// Export the current game as a clean Markdown document.
+    /// Contains only: header, chronicle, clean turn-by-turn log, and state snapshot.
+    /// No system prompts, format markers, or internal artifacts.
+    pub fn export_full_document(&self) -> String {
+        let mut doc = String::new();
+        doc.push_str("# 修仙录\n\n");
+        let player_name = self.state.flags.iter()
+            .find(|f| f.starts_with("player-name-"))
+            .map(|f| f.replace("player-name-", ""))
+            .unwrap_or_else(|| "无名".into());
+        doc.push_str(&format!("**修士**: {}  |  **境界**: {}  |  **回合**: {}  |  **灵力**: {}/{}\n\n",
+            player_name, self.state.realm, self.state.round, self.state.qi, self.state.max_qi));
+
+        // Chronicle
+        doc.push_str(&self.chronicle.to_markdown());
+        doc.push_str("\n---\n\n");
+
+        // Clean turn-by-turn log: skip system messages, strip format markers from assistant
+        doc.push_str("## 修仙录\n\n");
+        let context = self.window.get_context_messages();
+        let mut user_action: Option<&str> = None;
+        for msg in &context {
+            match msg.role.as_str() {
+                "user" => {
+                    user_action = Some(&msg.content);
+                }
+                "assistant" => {
+                    if let Some(action) = user_action.take() {
+                        // Extract clean narrative only — no [元文本], no [选项]
+                        let parsed = crate::prompt::builder::parse_structured_response(&msg.content);
+                        let narrative = if parsed.narrative.is_empty() {
+                            msg.content.lines().take(3).collect::<Vec<_>>().join("\n")
+                        } else {
+                            parsed.narrative
+                        };
+                        doc.push_str(&format!("> {}\n\n", action));
+                        doc.push_str(&format!("{}\n\n", narrative));
+                        doc.push_str("---\n\n");
+                    }
+                }
+                _ => {} // skip system messages (compaction summaries, etc.)
+            }
+        }
+
+        // State snapshot
+        doc.push_str("## 当前状态\n\n");
+        doc.push_str(&self.state.to_narrative());
+
+        doc
     }
 }

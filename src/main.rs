@@ -84,12 +84,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         let input_text = app.status_message.clone(); // stored input
                         app.narrative = Some(parsed.narrative.clone());
                         app.meta_text = parsed.meta_text;
-                        app.options = if parsed.options.is_empty() {
-                            engine.generate_fallback_options()
-                        } else { parsed.options };
-                        app.scene_type = parsed.scene_type;
-                        app.selected = 0;
-                        app.mode = AppMode::Selecting;
+                        if parsed.options.is_empty() {
+                            eprintln!("[tui] AI returned no options — switching to free input (round {})", engine.state.round);
+                            app.options = vec![];
+                            app.mode = AppMode::CustomInput;
+                            app.textarea = make_textarea();
+                        } else {
+                            app.options = parsed.options;
+                            app.selected = 0;
+                            app.mode = AppMode::Selecting;
+                        };
 
                         let narrative = parsed.narrative.clone();
                         let changes = engine.extract_state_with_llm(&narrative).await;
@@ -142,6 +146,17 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press { continue; }
 
+                // Handle chronicle overlay
+                if app.mode == AppMode::Chronicle {
+                    match key.code {
+                        KeyCode::Char('c') | KeyCode::Esc | KeyCode::Enter => {
+                            app.mode = AppMode::Selecting;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // Handle textarea input
                 if app.mode == AppMode::CustomInput {
                     match key.code {
@@ -177,6 +192,28 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Char('Q') => {
                         app.mode = AppMode::Quit;
+                    }
+                    KeyCode::Char('s') => {
+                        if let Err(e) = engine.save_game(&autosave_path.to_string_lossy()) {
+                            app.status_message = format!("存档失败: {}", e);
+                        } else {
+                            app.status_message = format!("已存档 (第{}回合)", engine.state.round);
+                        }
+                    }
+                    KeyCode::Char('c') => {
+                        app.chronicle_text = engine.chronicle.to_markdown();
+                        app.mode = AppMode::Chronicle;
+                    }
+                    KeyCode::Char('e') => {
+                        let doc = engine.export_full_document();
+                        let export_path = dirs_next().unwrap_or_else(|| PathBuf::from("."))
+                            .join(format!("xgamengine_export_{}.md", 
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
+                        match std::fs::write(&export_path, &doc) {
+                            Ok(_) => app.status_message = format!("已导出到: {:?}", export_path),
+                            Err(e) => app.status_message = format!("导出失败: {}", e),
+                        }
                     }
                     KeyCode::Char('j') | KeyCode::Down => { app.select_next(); }
                     KeyCode::Char('k') | KeyCode::Up => { app.select_prev(); }
@@ -253,6 +290,21 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn render_frame(f: &mut ratatui::Frame, app: &AppState, streaming: bool) {
+    // Chronicle fullscreen overlay
+    if app.mode == AppMode::Chronicle {
+        xgamengine::tui::app::render_chronicle(f, f.area(), app);
+        render_prompt(f, 
+            ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints([
+                    ratatui::layout::Constraint::Min(6),
+                    ratatui::layout::Constraint::Length(1),
+                ])
+                .split(f.area())[1],
+            app);
+        return;
+    }
+
     let main_layout = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints([
