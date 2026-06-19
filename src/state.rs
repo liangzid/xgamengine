@@ -134,19 +134,8 @@ impl Default for GameState {
                     proficiency: 0.3,
                 }
             ],
-            inventory: vec![
-                InventoryItem {
-                    name: "凝脉丹".into(), item_type: "丹药".into(),
-                    quality: "普通".into(), quantity: 3,
-                    effect: "稳固经脉，小幅提升修炼效率".into(),
-                },
-                InventoryItem {
-                    name: "凡铁剑".into(), item_type: "法器".into(),
-                    quality: "普通".into(), quantity: 1,
-                    effect: "无特殊效果".into(),
-                },
-            ],
-            spirit_stones: 50,
+            inventory: vec![],
+            spirit_stones: 0,
             locations: vec!["青云宗·外门洞府".into(), "青云宗·传功殿".into()],
             current_location: "青云宗·外门洞府".into(),
             quests: vec![],
