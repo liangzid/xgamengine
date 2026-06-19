@@ -233,9 +233,7 @@ impl Engine {
         let mut opts: Vec<String> = Vec::new();
 
         // Cultivation options — always relevant
-        if self.state.realm_progress > 0.7 {
-            opts.push("尝试突破境界".into());
-        } else if self.state.qi < 50 {
+        if self.state.qi < 50 {
             opts.push("打坐恢复灵力".into());
         } else {
             opts.push("潜心修炼功法".into());

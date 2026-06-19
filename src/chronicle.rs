@@ -69,10 +69,8 @@ impl Chronicle {
                 self.current_events.push(format!("获得物品: {} ({} {})", item.name, item.quality, item.item_type));
             }
         }
-        if let Some(rp) = changes.realm_progress {
-            if rp > 0.1 {
-                self.current_events.push("修为大幅精进".into());
-            }
+        if let Some(ref realm) = changes.set_realm {
+            self.current_events.push(format!("境界突破: {}", realm));
         }
         if let Some(ref loc) = changes.set_current_location {
             self.current_events.push(format!("前往: {}", loc));

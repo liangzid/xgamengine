@@ -221,23 +221,13 @@ impl GameState {
     }
 
     pub fn apply_state_change(&mut self, change: &StateChange) {
-        if let Some(rp) = change.realm_progress {
-            self.realm_progress = (self.realm_progress + rp).clamp(0.0, 1.0);
-        }
         // Handle explicit realm name change (LLM-detected)
         if let Some(ref new_realm) = change.set_realm {
             if REALM_ORDER.contains(&new_realm.as_str()) {
                 self.realm = new_realm.clone();
                 self.realm_progress = 0.0;
-            }
-        }
-        // Auto-advance realm when progress reaches 1.0 (breakthrough)
-        if self.realm_progress >= 1.0 {
-            if let Some(pos) = REALM_ORDER.iter().position(|&r| r == self.realm.as_str()) {
-                if let Some(&next_realm) = REALM_ORDER.get(pos + 1) {
-                    self.realm = next_realm.to_string();
-                    self.realm_progress = 0.0;
-                    // Full restore on breakthrough
+                // Full restore on breakthrough to a new major realm
+                if self.realm.ends_with("初期") || self.realm.ends_with("中期") || self.realm.ends_with("后期") || self.realm.ends_with("圆满") {
                     self.qi = self.max_qi;
                 }
             }
@@ -389,7 +379,6 @@ impl GameState {
 /// State change extracted from AI narrative (now LLM-powered via JSON)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StateChange {
-    pub realm_progress: Option<f32>,
     pub set_realm: Option<String>,          // explicit realm name change (e.g. "练气期中期")
     pub qi_delta: Option<i32>,
     pub qi_set: Option<i32>,              // absolute set (for breakthroughs that fully restore)
