@@ -298,6 +298,49 @@ pub fn build_state_extraction_prompt(state: &crate::state::GameState, narrative:
     )
 }
 
+/// Pre-process JSON: convert string elements to objects in add_techniques and add_items.
+/// LLM sometimes outputs ["清心诀"] instead of [{"name":"清心诀",...}]
+fn fix_string_arrays(json_str: &str) -> String {
+    let mut val: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return json_str.to_string(),
+    };
+
+    if let Some(obj) = val.as_object_mut() {
+        // Fix add_techniques: convert strings to Technique objects
+        if let Some(arr) = obj.get_mut("add_techniques").and_then(|v| v.as_array_mut()) {
+            for item in arr.iter_mut() {
+                if item.is_string() {
+                    let name = item.as_str().unwrap_or("").to_string();
+                    *item = serde_json::json!({
+                        "name": name,
+                        "tier": "黄阶",
+                        "tech_type": "心法",
+                        "proficiency": 0.1
+                    });
+                }
+            }
+        }
+        // Fix add_items: convert strings to InventoryItem objects
+        if let Some(arr) = obj.get_mut("add_items").and_then(|v| v.as_array_mut()) {
+            for item in arr.iter_mut() {
+                if item.is_string() {
+                    let name = item.as_str().unwrap_or("").to_string();
+                    *item = serde_json::json!({
+                        "name": name,
+                        "item_type": "杂物",
+                        "quality": "普通",
+                        "quantity": 1,
+                        "effect": ""
+                    });
+                }
+            }
+        }
+    }
+
+    val.to_string()
+}
+
 /// Parse and review the LLM's JSON response into a StateChange.
 /// Deduplicates: skips techniques/items/flags/locations/quests already present.
 pub fn parse_state_change_json(json_str: &str, state: &crate::state::GameState) -> crate::state::StateChange {
@@ -309,7 +352,11 @@ pub fn parse_state_change_json(json_str: &str, state: &crate::state::GameState) 
         .trim_end_matches("```")
         .trim();
 
-    let change: crate::state::StateChange = match serde_json::from_str(cleaned) {
+    // Pre-process: the LLM sometimes outputs technique/item names as plain strings
+    // instead of objects. Convert them: "清心诀" → {"name":"清心诀"}
+    let fixed = fix_string_arrays(&cleaned);
+
+    let change: crate::state::StateChange = match serde_json::from_str(&fixed) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[state extraction] JSON parse error: {}. Raw (first 300 chars): {}",
