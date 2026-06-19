@@ -2,7 +2,7 @@ use crate::chronicle::Chronicle;
 use crate::llm::client::{LlmClient, SseEvent};
 use crate::memory::ConversationWindow;
 use crate::prompt::builder;
-use crate::state::GameState;
+use crate::state::{GameState, WorldConfig, CreationChoices};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -16,6 +16,9 @@ pub struct EngineOutput {
     pub state_changes: Option<crate::state::StateChange>,
     pub round: i32,
     pub had_fallback: bool,  // true if options were fallback-generated
+    /// Real token usage from all LLM API calls made during this turn
+    /// (main dialog + state extraction + any compaction/retries).
+    pub tokens_this_turn: u64,
 }
 
 impl EngineOutput {
@@ -31,34 +34,110 @@ pub struct Engine {
     pub window: ConversationWindow,
     pub template_dir: PathBuf,
     pub client: LlmClient,
+    pub world_config: WorldConfig,
+    /// Legacy NPC name — kept for backward compat with old saves
     pub npc: String,
     pub chronicle: Chronicle,
 }
 
 impl Engine {
     pub fn new(template_dir: PathBuf, client: LlmClient) -> Self {
+        let world_config = WorldConfig::default();
+        let state = Self::build_initial_state(&world_config, "无名", "");
         Self {
-            state: GameState::default(),
+            state,
             window: ConversationWindow::new(),
             template_dir,
             client,
+            world_config,
             npc: "qingxu".into(),
             chronicle: Chronicle::new(),
         }
     }
 
+    /// Build a GameState from a WorldConfig and player identity.
+    fn build_initial_state(world_config: &WorldConfig, player_name: &str, _dao_name: &str) -> GameState {
+        let mut state = GameState::default();
+        state.sect = world_config.sect_name.clone();
+        state.current_location = world_config.starting_location_name.clone();
+        state.locations = vec![
+            world_config.starting_location_name.clone(),
+        ];
+        state.relationships.clear();
+        state.character_notes.clear();
+
+        // Set up relationship with key NPC if present
+        if world_config.key_npc_name != "无" && !world_config.key_npc_name.is_empty() {
+            state.relationships = vec![
+                crate::state::Relationship {
+                    name: world_config.key_npc_name.clone(),
+                    role: world_config.key_npc_role.clone(),
+                    affinity: 20,
+                }
+            ];
+            state.character_notes.insert(
+                world_config.key_npc_name.clone(),
+                world_config.key_npc_description.clone(),
+            );
+        }
+
+        state.flags.push(format!("player-name-{}", player_name));
+        state
+    }
+
+    /// Initialize engine state from CreationChoices and a generated WorldConfig.
+    /// Sets up the GameState with calculated stats, items, and world settings.
+    pub fn init_from_creation(
+        &mut self,
+        choices: &CreationChoices,
+        world_config: WorldConfig,
+    ) {
+        let stats = choices.calculate_initial_stats();
+        let spirit_stones = choices.calculate_initial_spirit_stones();
+        let items = choices.calculate_initial_items();
+        let flags = choices.collect_background_flags();
+
+        self.world_config = world_config;
+        self.state = Self::build_initial_state(&self.world_config, &choices.player_name, &choices.dao_name);
+        self.state.stats = stats;
+        self.state.spirit_stones = spirit_stones;
+        self.state.inventory = items;
+        self.state.techniques.clear(); // clear default 青云吐纳术 — LLM will assign appropriate starter
+        for flag in flags {
+            if !self.state.flags.contains(&flag) {
+                self.state.flags.push(flag);
+            }
+        }
+        self.window = ConversationWindow::new();
+        self.chronicle = Chronicle::new();
+        self.npc = self.world_config.key_npc_name.clone();
+    }
+
+    /// Generate the world from character creation choices via LLM.
+    /// Returns the generated WorldConfig and the token usage for this call.
+    pub async fn generate_world(&self, choices: &CreationChoices) -> Result<(WorldConfig, u64), String> {
+        let prompt = builder::build_world_generation_prompt(choices);
+        let msgs = vec![
+            crate::memory::Message { role: "system".into(), content: prompt }
+        ];
+        let (raw, usage) = self.client.chat_completion_sync(&msgs).await?;
+        let wc = builder::parse_world_config_json(&raw, choices)
+            .ok_or_else(|| "Failed to parse world config from LLM response".to_string())?;
+        Ok((wc, usage.total()))
+    }
+
     /// Start a new game with a custom opening prompt (for web/character creation)
     pub async fn start_game_ex(&mut self, opening_input: &str) -> Result<EngineOutput, String> {
         let messages = builder::build_messages(
-            &self.template_dir, &self.state, &self.window, opening_input, &self.npc
+            &self.template_dir, &self.state, &self.window, opening_input, &self.world_config
         )?;
 
-        let (raw, _tokens) = self.client.chat_completion_sync(&messages).await?;
+        let (raw, usage) = self.client.chat_completion_sync(&messages).await?;
         let parsed = builder::parse_structured_response(&raw);
 
         let had_fallback = parsed.options.is_empty();
 
-        self.window.append_turn(opening_input, &parsed.narrative);
+        self.window.append_turn(opening_input, &raw);
 
         Ok(EngineOutput {
             narrative: parsed.narrative,
@@ -70,6 +149,7 @@ impl Engine {
             state_changes: None,
             round: 0,
             had_fallback,
+            tokens_this_turn: usage.total(),
         }.with_custom_option())
     }
 
@@ -80,16 +160,16 @@ impl Engine {
             self.state.sect
         );
 
-        let messages = builder::build_messages(
+        let messages = builder::build_messages_legacy(
             &self.template_dir, &self.state, &self.window, &opening_input, &self.npc
         )?;
 
-        let (raw, _tokens) = self.client.chat_completion_sync(&messages).await?;
+        let (raw, usage) = self.client.chat_completion_sync(&messages).await?;
         let parsed = builder::parse_structured_response(&raw);
 
         let had_fallback = parsed.options.is_empty();
 
-        self.window.append_turn(&opening_input, &parsed.narrative);
+        self.window.append_turn(&opening_input, &raw);
 
         Ok(EngineOutput {
             narrative: parsed.narrative,
@@ -101,12 +181,14 @@ impl Engine {
             state_changes: None,
             round: 0,
             had_fallback,
+            tokens_this_turn: usage.total(),
         }.with_custom_option())
     }
 
     /// Process a player input — returns output (blocking).
-    /// Call LLM to extract state changes from narrative (JSON output mode)
-    pub async fn extract_state_with_llm(&self, narrative: &str) -> crate::state::StateChange {
+    /// Call LLM to extract state changes from narrative (JSON output mode).
+    /// Returns (state_changes, token_usage).
+    pub async fn extract_state_with_llm(&self, narrative: &str) -> (crate::state::StateChange, u64) {
         // Build structured turn log for entity tracking
         let context_msgs = self.window.get_context_messages();
         let recent: Vec<_> = context_msgs.iter()
@@ -139,14 +221,18 @@ impl Engine {
             crate::memory::Message { role: "system".into(), content: prompt }
         ];
         match self.client.chat_completion_sync(&msgs).await {
-            Ok((raw, _tokens)) => crate::prompt::builder::parse_state_change_json(&raw, &self.state),
-            Err(_) => crate::state::StateChange::default(),
+            Ok((raw, usage)) => {
+                let changes = crate::prompt::builder::parse_state_change_json(&raw, &self.state);
+                (changes, usage.total())
+            }
+            Err(_) => (crate::state::StateChange::default(), 0),
         }
     }
 
     /// Retries once with a format reminder if the AI doesn't produce options.
     pub async fn process_input(&mut self, user_input: &str) -> Result<EngineOutput, String> {
         self.state.round += 1;
+        let mut tokens_this_turn = 0u64;
 
         // ---- Compaction: compress old history if approaching context limit ----
         if self.window.needs_compaction() {
@@ -155,20 +241,22 @@ impl Engine {
                 let compact_msgs = vec![
                     crate::memory::Message { role: "system".into(), content: compact_prompt }
                 ];
-                if let Ok((summary_raw, _tokens)) = self.client.chat_completion_sync(&compact_msgs).await {
+                if let Ok((summary_raw, usage)) = self.client.chat_completion_sync(&compact_msgs).await {
+                    tokens_this_turn += usage.total();
                     self.window.apply_compaction(&summary_raw);
                 }
             }
         }
 
         // Append format reminder to user input
-        let input_with_hint = format!("{}\n\n（必须严格包含：[叙事正文] + --- + [元文本] + [选项] + 恰好4个选项，否则视为无效回复）", user_input);
+        let input_with_hint = format!("{}\n\n（每次回复必须输出纯 JSON，格式：{{\"narrative\":\"...\",\"meta_text\":\"...\",\"options\":[\"...\",\"...\",\"...\",\"...\"]}}）", user_input);
 
         let messages = builder::build_messages(
-            &self.template_dir, &self.state, &self.window, &input_with_hint, &self.npc
+            &self.template_dir, &self.state, &self.window, &input_with_hint, &self.world_config
         )?;
 
-        let (raw, _tokens) = self.client.chat_completion_sync(&messages).await?;
+        let (raw, usage) = self.client.chat_completion_sync(&messages).await?;
+        tokens_this_turn += usage.total();
         let mut parsed = builder::parse_structured_response(&raw);
 
         if parsed.narrative.is_empty() {
@@ -179,13 +267,14 @@ impl Engine {
         let options_empty = parsed.options.is_empty();
         if options_empty {
             let retry_input = format!(
-                "{}\n\n【重要：你上次回复缺少[选项]部分。请严格按照以下格式重新回复：\n[叙事正文]\n...\n---\n[元文本]\n...\n[选项]\n1. ...\n2. ...\n3. ...\n4. ...】",
+                "{}\n\n【重要：你上次回复格式错误。请重新输出一个严格的 JSON 对象：{{\"narrative\":\"...\",\"meta_text\":\"...\",\"options\":[\"...\",\"...\",\"...\",\"...\"]}}】",
                 user_input
             );
             let retry_messages = builder::build_messages(
-                &self.template_dir, &self.state, &self.window, &retry_input, &self.npc
+                &self.template_dir, &self.state, &self.window, &retry_input, &self.world_config
             )?;
-            if let Ok((retry_raw, _)) = self.client.chat_completion_sync(&retry_messages).await {
+            if let Ok((retry_raw, retry_usage)) = self.client.chat_completion_sync(&retry_messages).await {
+                tokens_this_turn += retry_usage.total();
                 let retry_parsed = builder::parse_structured_response(&retry_raw);
                 if !retry_parsed.options.is_empty() {
                     parsed = retry_parsed;
@@ -205,7 +294,8 @@ impl Engine {
         };
 
         // ---- LLM-powered state extraction ----
-        let changes = self.extract_state_with_llm(&narrative).await;
+        let (changes, extraction_tokens) = self.extract_state_with_llm(&narrative).await;
+        tokens_this_turn += extraction_tokens;
         self.state.apply_state_change(&changes);
         self.state.last_narrative = narrative.clone();
 
@@ -214,7 +304,7 @@ impl Engine {
             self.state.round, &self.state.realm, &changes, &self.state.flags,
         );
 
-        self.window.append_turn(user_input, &narrative);
+        self.window.append_turn(user_input, &raw);
 
         Ok(EngineOutput {
             narrative,
@@ -224,6 +314,7 @@ impl Engine {
             state_changes: Some(changes),
             round: self.state.round,
             had_fallback,
+            tokens_this_turn,
         }.with_custom_option())
     }
 
@@ -293,7 +384,7 @@ impl Engine {
         self.state.round += 1;
 
         let messages = builder::build_messages(
-            &self.template_dir, &self.state, &self.window, user_input, &self.npc
+            &self.template_dir, &self.state, &self.window, user_input, &self.world_config
         )?;
 
         // Start streaming
@@ -302,13 +393,13 @@ impl Engine {
         // Stream is done — we still need the full text for parsing
         // For now, just call sync again for parsing
         // TODO: accumulate from stream for real streaming + parsing
-        let (raw, _tokens) = self.client.chat_completion_sync(&messages).await?;
+        let (raw, usage) = self.client.chat_completion_sync(&messages).await?;
         let parsed = builder::parse_structured_response(&raw);
 
         let changes = crate::state::StateChange::default(); // streaming path: skip extraction for now
         self.state.apply_state_change(&changes);
         self.state.last_narrative = parsed.narrative.clone();
-        self.window.append_turn(user_input, &parsed.narrative);
+        self.window.append_turn(user_input, &raw);
 
         Ok(EngineOutput {
             narrative: parsed.narrative,
@@ -318,6 +409,7 @@ impl Engine {
             state_changes: Some(changes),
             round: self.state.round,
             had_fallback: false,
+            tokens_this_turn: usage.total(),
         }.with_custom_option())
     }
 
@@ -325,6 +417,7 @@ impl Engine {
         let data = serde_json::json!({
             "state": self.state,
             "window": self.window,
+            "world_config": self.world_config,
             "npc": self.npc,
             "chronicle": self.chronicle,
         });
@@ -348,6 +441,12 @@ impl Engine {
         if let Some(win_val) = data.get("window") {
             self.window = serde_json::from_value(win_val.clone())
                 .unwrap_or_else(|_| ConversationWindow::new());
+        }
+
+        // Load world_config (may not exist in older saves)
+        if let Some(wc_val) = data.get("world_config") {
+            self.world_config = serde_json::from_value(wc_val.clone())
+                .unwrap_or_else(|_| WorldConfig::default());
         }
 
         // Load npc

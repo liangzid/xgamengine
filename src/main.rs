@@ -46,6 +46,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             state_changes: None,
             round: engine.state.round,
             had_fallback: false,
+            tokens_this_turn: 0,
         }.with_custom_option()
     } else {
         engine.start_game("qingyun", "无名").await
@@ -77,7 +78,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         app.narrative = Some(stream_buffer.clone());
                         got_content = true;
                     }
-                    SseEvent::Done => {
+                    SseEvent::Done { .. } => {
                         stream_active = false;
                         // Parse the accumulated text
                         let parsed = builder::parse_structured_response(&stream_buffer);
@@ -96,7 +97,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let narrative = parsed.narrative.clone();
-                        let changes = engine.extract_state_with_llm(&narrative).await;
+                        let (changes, _tokens) = engine.extract_state_with_llm(&narrative).await;
                         engine.state.apply_state_change(&changes);
                         engine.state.last_narrative = narrative.clone();
                         engine.window.append_turn(&input_text, &narrative);
@@ -173,7 +174,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                                 // Start streaming
                                 let msgs = builder::build_messages(
                                     &engine.template_dir, &engine.state,
-                                    &engine.window, &input, &engine.npc,
+                                    &engine.window, &input, &engine.world_config,
                                 ).unwrap_or_default();
                                 let tx = stream_tx.clone();
                                 let client = engine.client.clone();
@@ -234,7 +235,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 let msgs = builder::build_messages(
                                     &engine.template_dir, &engine.state,
-                                    &engine.window, &choice, &engine.npc,
+                                    &engine.window, &choice, &engine.world_config,
                                 ).unwrap_or_default();
                                 let tx = stream_tx.clone();
                                 let client_clone = engine.client.clone();
@@ -263,7 +264,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 let msgs = builder::build_messages(
                                     &engine.template_dir, &engine.state,
-                                    &engine.window, &choice, &engine.npc,
+                                    &engine.window, &choice, &engine.world_config,
                                 ).unwrap_or_default();
                                 let tx = stream_tx.clone();
                                 let client_clone = engine.client.clone();
