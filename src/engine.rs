@@ -107,19 +107,32 @@ impl Engine {
     /// Process a player input — returns output (blocking).
     /// Call LLM to extract state changes from narrative (JSON output mode)
     pub async fn extract_state_with_llm(&self, narrative: &str) -> crate::state::StateChange {
-        // Build recent conversation context (last 3 rounds) for entity tracking
+        // Build structured turn log for entity tracking
         let context_msgs = self.window.get_context_messages();
         let recent: Vec<_> = context_msgs.iter()
             .filter(|m| m.role != "system")
             .rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
-        let recent_context = recent.iter()
-            .map(|m| format!("[{}]: {}", m.role, 
-                if m.role == "assistant" { 
-                    let p = crate::prompt::builder::parse_structured_response(&m.content);
-                    p.narrative 
-                } else { m.content.clone() }))
-            .collect::<Vec<_>>()
-            .join("\n");
+        
+        let mut recent_context = String::new();
+        let mut round_num = self.state.round.saturating_sub(recent.len() as i32 / 2).max(1);
+        for chunk in recent.chunks(2) {
+            let user_msg = chunk.iter().find(|m| m.role == "user");
+            let asst_msg = chunk.iter().find(|m| m.role == "assistant");
+            if let (Some(u), Some(a)) = (user_msg, asst_msg) {
+                let narrative_summary = {
+                    let p = crate::prompt::builder::parse_structured_response(&a.content);
+                    let n = if p.narrative.is_empty() { &a.content } else { &p.narrative };
+                    n.chars().take(150).collect::<String>()
+                };
+                recent_context.push_str(&format!(
+                    "- 回合{}: 玩家选择 \"{}\" → 天道叙事: \"{}\"\n",
+                    round_num,
+                    &u.content.chars().take(80).collect::<String>(),
+                    narrative_summary,
+                ));
+                round_num += 1;
+            }
+        }
         
         let prompt = crate::prompt::builder::build_state_extraction_prompt(&self.state, narrative, &recent_context);
         let msgs = vec![
