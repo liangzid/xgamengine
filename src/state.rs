@@ -289,6 +289,7 @@ impl GameState {
         }
         if let Some(ref rel_changes) = change.relationship_changes {
             for rc in rel_changes {
+                if rc.name.is_empty() { continue; }
                 if let Some(rel) = self.relationships.iter_mut()
                     .find(|r| r.name == rc.name) {
                     rel.affinity = (rel.affinity + rc.affinity_delta).clamp(-100, 100);
@@ -355,6 +356,7 @@ impl GameState {
         // Consume items: reduce quantity, remove if ≤ 0
         if let Some(ref consumes) = change.consume_items {
             for c in consumes {
+                if c.name.is_empty() { continue; }
                 if let Some(item) = self.inventory.iter_mut().find(|i| i.name == c.name) {
                     item.quantity = (item.quantity - c.quantity).max(0);
                 }
@@ -364,6 +366,7 @@ impl GameState {
         // Rename relationships: update character name
         if let Some(ref renames) = change.rename_relationships {
             for r in renames {
+                if r.old_name.is_empty() || r.new_name.is_empty() { continue; }
                 if let Some(rel) = self.relationships.iter_mut().find(|x| x.name == r.old_name) {
                     rel.name = r.new_name.clone();
                 }
@@ -409,6 +412,7 @@ pub struct StateChange {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsumeItem {
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub quantity: i32,
@@ -416,12 +420,15 @@ pub struct ConsumeItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenameRelationship {
+    #[serde(default)]
     pub old_name: String,
+    #[serde(default)]
     pub new_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationshipChange {
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub affinity_delta: i32,
