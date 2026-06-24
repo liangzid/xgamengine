@@ -660,7 +660,7 @@ pub fn build_world_generation_prompt(choices: &CreationChoices) -> String {
 }}
 
 ══════════════════════════════════════════
-叙事风格: {}
+叙事风格: {}（{}性修士视角）
 重要：
 - 宗门必须与修士背景中的宗门类型（{}）完全一致
 - 如果修士的入道机缘是"仙师路过"或"为报恩情，被恩人引入"，则key_npc_name不能为"无"，必须生成一位导师
@@ -671,6 +671,7 @@ pub fn build_world_generation_prompt(choices: &CreationChoices) -> String {
         choices.sect_category,
         choices.sect_category,
         if choices.narrative_style == "female" { "女频" } else { "男频" },
+        if choices.narrative_style == "female" { "女" } else { "男" },
         choices.sect_category,
     )
 }

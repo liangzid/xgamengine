@@ -326,6 +326,7 @@ impl CreationChoices {
         if !self.dao_name.is_empty() {
             s.push_str(&format!("道号: {}\n", self.dao_name));
         }
+        s.push_str(&format!("修士性别: {}\n", if self.narrative_style == "female" { "女" } else { "男" }));
         s.push_str(&format!("叙事风格: {}\n", if self.narrative_style == "female" { "女频" } else { "男频" }));
         s.push_str("\n## 修士背景\n\n");
         s.push_str(&format!("家世出身: {}\n", self.family_background));
@@ -469,10 +470,13 @@ impl WorldConfig {
         let mut s = String::new();
 
         // Narrative style directive
-        s.push_str(&format!("当前叙事风格: {}\n", if self.narrative_style == "female" { "女频" } else { "男频" }));
         if self.narrative_style == "female" {
+            s.push_str("主角设定: 女性修士。\n");
+            s.push_str("当前叙事风格: 女频\n");
             s.push_str("女频：侧重人物关系、情感描写、成长蜕变、社会互动、命运纠葛。文风细腻，注重内心戏。\n");
         } else {
+            s.push_str("主角设定: 男性修士。\n");
+            s.push_str("当前叙事风格: 男频\n");
             s.push_str("男频：侧重力量成长、战斗描写、功法体系、资源竞争、宗门政治。文风爽快，注重升级感。\n");
         }
 
